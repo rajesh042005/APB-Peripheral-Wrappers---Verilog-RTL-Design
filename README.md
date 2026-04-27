@@ -1,40 +1,94 @@
-<h1 align="center"> APB Peripheral Wrappers - Verilog RTL Design </h1>
+<h1 align="center"> APB Wrappers & SoC Top Integration - Verilog RTL Design </h1>
 
 <p align="center">
-<img src="https://img.shields.io/badge/Protocol-AMBA%20APB-blue?style=for-the-badge"/>
+<img src="https://img.shields.io/badge/Protocol-AMBA%20AHB%20|%20APB-blue?style=for-the-badge"/>
 <img src="https://img.shields.io/badge/Design-RTL-orange?style=for-the-badge"/>
 <img src="https://img.shields.io/badge/Language-Verilog-green?style=for-the-badge"/>
-<img src="https://img.shields.io/badge/Stage-Peripheral%20Integration-purple?style=for-the-badge"/>
+<img src="https://img.shields.io/badge/Stage-Full%20SoC-purple?style=for-the-badge"/>
 </p>
 
 <p align="center">
 <img src="https://img.shields.io/badge/Status-Completed-success?style=flat-square"/>
-<img src="https://img.shields.io/badge/Type-APB%20Wrappers-blue?style=flat-square"/>
-<img src="https://img.shields.io/badge/Role-Peripheral%20Interface-informational?style=flat-square"/>
+<img src="https://img.shields.io/badge/Type-System%20Integration-blue?style=flat-square"/>
+<img src="https://img.shields.io/badge/Goal-Complete%20SoC-informational?style=flat-square"/>
 </p>
 
 ---
 
 <p align="center">
-This module set implements <b>APB Wrappers</b> for UART, SPI, I2C, USB, and RAM, converting APB transactions into peripheral-specific control signals.
+This section integrates APB peripheral wrappers with AHB, APB, and Bridge modules to form a complete SoC using a hierarchical AMBA-based architecture.
 </p>
 
 ---
 
-# System Architecture
+# SoC Architecture
 
 ```mermaid
 flowchart LR
-    APB[APB BUS] --> UART[APB UART]
+    CPU[AHB Master] --> AHB[AHB BUS]
+    AHB --> BRIDGE[AHB-APB Bridge]
+    BRIDGE --> APB[APB BUS]
+
+    APB --> RAM[APB RAM]
+    APB --> UART[APB UART]
     APB --> SPI[APB SPI]
     APB --> I2C[APB I2C]
     APB --> USB[APB USB]
-    APB --> RAM[APB RAM]
 ```
 
-- Each wrapper connects one peripheral to APB  
-- APB bus selects wrapper using address decoding  
-- Only one wrapper active per transfer  
+- AHB handles high-speed transactions  
+- APB connects low-speed peripherals  
+- Bridge performs protocol conversion (pipeline → non-pipeline)  
+
+---
+
+# RTL Integration Flow
+
+```mermaid
+flowchart LR
+    MASTER --> AHB_BUS
+    AHB_BUS --> BRIDGE
+    BRIDGE --> APB_BUS
+    APB_BUS --> WRAPPERS
+    WRAPPERS --> PERIPHERALS
+```
+
+- `ahb_master` generates transactions  
+- `ahb_bus` forwards signals to bridge  
+- `ahb_apb_bridge` converts protocol  
+- `apb_bus` performs address decoding  
+- Wrappers interface peripherals  
+
+---
+
+# Signal-Level Data Flow
+
+```mermaid
+flowchart LR
+    HADDR --> PADDR
+    HWDATA --> PWDATA
+    PRDATA --> HRDATA
+```
+
+- Address and control flow: AHB → APB  
+- Write data: HWDATA → PWDATA  
+- Read data: PRDATA → HRDATA  
+
+---
+
+# Address Mapping (APB Bus)
+
+| Address | Peripheral |
+|--------|-----------|
+| 0x0000_0000 | RAM |
+| 0x0000_1000 | UART |
+| 0x0000_2000 | SPI |
+| 0x0000_3000 | I2C |
+| 0x0000_4000 | USB |
+
+- Decoded using `paddr[15:12]`  
+- Generates `psel_*` signals  
+- Only one peripheral active at a time  
 
 ---
 
@@ -42,247 +96,128 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    MASTER --> SETUP
     SETUP --> ACCESS
-    ACCESS --> PERIPHERAL
+    ACCESS --> COMPLETE
 ```
 
-- SETUP: Address + control valid  
-- ACCESS: Data transfer  
-- Peripheral reacts based on register mapping  
+- SETUP: `psel=1`, `penable=0`  
+- ACCESS: `penable=1`  
+- Transfer completes when `pready=1`  
 
 ---
 
-# Common Interface
+# Peripheral Behavior
 
-All wrappers use:
+## UART
+- TX triggered via `tx_start` pulse  
+- RX continuously sampled  
+- Status: `tx_busy`, `rx_done`  
 
-```verilog
-psel & penable & pwrite → WRITE
-psel & penable & !pwrite → READ
-```
 
-- No wait states (pready = 1) except RAM  
-- No error (pslverr = 0) except RAM  
+## SPI
+- Start controlled via register bit  
+- CPOL/CPHA configurable  
+- `done` indicates completion  
 
----
 
-# APB UART Wrapper
+## I2C
+- `enable` acts as transaction trigger  
+- `rw` selects read/write  
+- Address + data loaded before execution  
 
-## Function
+## USB
+- Controlled using enable register  
+- Minimal wrapper (core handles protocol)  
 
-- Transmit (TX) and Receive (RX) data  
-- Controls UART core via register interface  
 
-## Address Map
-
-| Addr | Function |
-|------|---------|
-| 0x0 | TX Data (write triggers send) |
-| 0x4 | RX Data |
-| 0x8 | Status (rx_done, tx_busy) |
-
-## Operation
-
-- Write → loads tx_data and asserts tx_start (pulse)  
-- Read → returns RX data or status  
-
-## Key Behavior
-
-- `tx_start` is single-cycle pulse  
-- Continuous RX monitoring from UART  
+## RAM
+- FSM-based APB slave  
+- Supports wait states (`WAIT_CYCLES`)  
+- Error on invalid address (`PSLVERR=1`)  
 
 ---
 
-# APB SPI Wrapper
-
-## Function
-
-- SPI Master control  
-- Configurable mode (CPOL, CPHA)  
-
-## Address Map
-
-| Addr | Function |
-|------|---------|
-| 0x0 | TX Data |
-| 0x4 | RX Data |
-| 0x8 | Control (cpol, cpha, start) |
-| 0xC | Status (done) |
-
-## Operation
-
-- Write TX data  
-- Configure SPI mode  
-- Trigger transfer using start  
-
-## Key Behavior
-
-- `start` is pulse signal  
-- `done` indicates transfer completion  
-
----
-
-# APB I2C Wrapper
-
-## Function
-
-- I2C Master interface  
-- Supports read/write transactions  
-
-## Address Map
-
-| Addr | Function |
-|------|---------|
-| 0x0 | Control (enable, rw) |
-| 0x4 | Slave Address |
-| 0x8 | TX Data |
-| 0xC | RX Data |
-
-## Operation
-
-- Write control → starts transaction  
-- RW selects read/write  
-- Data transferred via tx_data / rx_data  
-
-## Key Behavior
-
-- `enable` acts as start pulse  
-- Address + data configured before transaction  
-
----
-
-# APB USB Wrapper
-
-## Function
-
-- Basic USB control interface  
-- Enables/disables USB core  
-
-## Address Map
-
-| Addr | Function |
-|------|---------|
-| 0x0 | Enable |
-| 0x4 | Status (dummy) |
-| 0x8 | Data (placeholder) |
-
-## Operation
-
-- Write → enables USB core  
-- Read → returns control/status  
-
-## Key Behavior
-
-- Minimal wrapper  
-- USB logic handled internally  
-
----
-
-# APB RAM Wrapper
-
-## Function
-
-- Memory-mapped storage  
-- Supports read/write with wait states and error  
-
----
-
-## Architecture
+# System-Level Operation
 
 ```mermaid
 flowchart LR
-    APB --> FSM
-    FSM --> MEMORY
+    CPU --> AHB
+    AHB --> BRIDGE
+    BRIDGE --> APB
+    APB --> PERIPH[Peripheral]
+    PERIPH --> DONE[Result]
 ```
 
-- FSM controls APB phases  
-- Memory stores data  
+- CPU initiates transaction  
+- AHB carries address/control  
+- Bridge converts to APB  
+- Peripheral executes and responds  
 
 ---
 
-## Addressing
+# Key Design Decisions
 
-```verilog
-addr = paddr[ADDR_WIDTH+1:2]
-```
+## 1. Hierarchical Bus Design
+- AHB → high-speed backbone  
+- APB → low-power peripheral bus  
 
-- Word-aligned addressing  
-- Prevents byte misalignment  
+## 2. Protocol Isolation
+- Bridge isolates timing and protocol differences  
+
+## 3. Modular Wrappers
+- Each peripheral independently pluggable  
+
+## 4. Pulse-Based Control
+- UART (`tx_start`)  
+- SPI (`start`)  
+- I2C (`enable`)  
 
 ---
 
-## FSM Behavior
+# Modules Integrated
+
+- ahb_master  
+- ahb_bus  
+- ahb_apb_bridge  
+- apb_bus  
+- apb_uart  
+- apb_spi  
+- apb_i2c  
+- apb_usb  
+- apb_ram  
+
+---
+
+# Key Features
+
+- Full AMBA-based SoC implementation  
+- Clean separation of bus domains  
+- Scalable peripheral architecture  
+- Memory-mapped access  
+- Supports wait states and error handling  
+
+---
+
+# Final Outcome
 
 ```mermaid
 flowchart LR
-    IDLE --> SETUP
-    SETUP --> ACCESS
-    ACCESS -->|pready=1| IDLE
-    ACCESS -->|pready=0| ACCESS
+    CPU --> AHB
+    AHB --> BRIDGE
+    BRIDGE --> APB
+    APB --> RAM
+    APB --> UART
+    APB --> SPI
+    APB --> I2C
+    APB --> USB
 ```
 
-- IDLE → wait for request  
-- SETUP → prepare  
-- ACCESS → perform read/write  
+A complete SoC integrating multiple peripherals using structured bus hierarchy and protocol conversion.
 
 ---
 
-## Wait State Handling
-
-- Controlled using `WAIT_CYCLES`  
-- pready asserted after delay  
-- simulates slow memory  
-
----
-
-## Error Handling
-
-- Address out of range → PSLVERR = 1  
-- Returns `0xDEADBEEF`  
-
----
-
-## Operation
-
-- Write → mem[addr] = pwdata  
-- Read → prdata = mem[addr]  
-
----
-
-# Key Design Patterns
-
-## Pulse-Based Control
-
-- UART: tx_start  
-- SPI: start  
-- I2C: enable  
-
-→ Trigger operations using single-cycle pulse  
-
-
-## Register-Based Interface
-
-- Each peripheral controlled via mapped registers  
-- Simple and scalable  
-
-
-## Unified APB Interface
-
-- Same handshake for all wrappers  
-- Easy integration into APB bus  
-
----
-
-# Role in SoC
-
-- Connects peripherals to APB  
-- Enables structured memory-mapped design  
-- Simplifies SoC integration  
-
----
 
 <p align="center"><b>
-APB wrappers act as the interface layer between the APB bus and peripheral cores, enabling clean, modular, and scalable SoC design.
+This design demonstrates end-to-end SoC development, from bus protocols and bridge design to peripheral integration, forming a scalable and modular architecture suitable for real-world VLSI systems.
 
 ---
